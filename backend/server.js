@@ -11,7 +11,9 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
-const WORKBOOK_PATH = path.join(__dirname, 'licenses.xlsx');
+const WORKBOOK_PATH = process.env.VERCEL
+  ? path.join('/tmp', 'licenses.xlsx')
+  : path.join(__dirname, 'licenses.xlsx');
 const LICENSE_TYPES = [
   'State Medical License',
   'DEA Registration',
@@ -313,18 +315,34 @@ app.get('/api/check-now', async (req, res) => {
 async function startServer() {
   await createWorkbookIfNeeded();
 
-  cron.schedule('0 0 * * *', async () => {
-    console.log('Running midnight expiration check...');
-    await checkExpiringLicenses();
-  });
+  if (!process.env.VERCEL) {
+    cron.schedule('0 0 * * *', async () => {
+      console.log('Running midnight expiration check...');
+      await checkExpiringLicenses();
+    });
 
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-startServer().catch((error) => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
+// Middleware to ensure workbook exists in Vercel serverless environment
+app.use(async (req, res, next) => {
+  try {
+    await createWorkbookIfNeeded();
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
+
+module.exports = app;
+
+if (!process.env.VERCEL) {
+  startServer().catch((error) => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  });
+}
 
