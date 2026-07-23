@@ -67,6 +67,10 @@ function isValidEmail(email) {
 function validatePayload(payload) {
   const errors = {};
 
+  if (!payload || typeof payload !== 'object') {
+    return { body: 'Invalid or missing JSON payload.' };
+  }
+
   if (!payload.doctorName || String(payload.doctorName).trim() === '') {
     errors.doctorName = 'Doctor Name is required.';
   }
@@ -227,7 +231,7 @@ async function checkExpiringLicenses() {
   }
 }
 
-app.get('/api/licenses', async (req, res) => {
+app.get(['/api/licenses', '/licenses'], async (req, res) => {
   try {
     const licenses = await readAllLicenses();
     res.json(licenses);
@@ -236,14 +240,22 @@ app.get('/api/licenses', async (req, res) => {
   }
 });
 
-app.post('/api/licenses', async (req, res) => {
-  const errors = validatePayload(req.body);
-
-  if (errors) {
-    return res.status(400).json({ message: 'Validation failed.', errors });
-  }
-
+app.post(['/api/licenses', '/licenses'], async (req, res) => {
   try {
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        // preserve original string if parse fails
+      }
+    }
+
+    const errors = validatePayload(body);
+    if (errors) {
+      return res.status(400).json({ message: 'Validation failed.', errors });
+    }
+
     await createWorkbookIfNeeded();
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(WORKBOOK_PATH);
@@ -253,11 +265,11 @@ app.post('/api/licenses', async (req, res) => {
     }
 
     const savedLicense = {
-      doctorName: String(req.body.doctorName).trim(),
-      licenseType: req.body.licenseType,
-      licenseNumber: String(req.body.licenseNumber).trim(),
-      expiryDate: req.body.expiryDate,
-      notificationEmail: String(req.body.notificationEmail).trim().toLowerCase(),
+      doctorName: String(body.doctorName).trim(),
+      licenseType: body.licenseType,
+      licenseNumber: String(body.licenseNumber).trim(),
+      expiryDate: body.expiryDate,
+      notificationEmail: String(body.notificationEmail).trim().toLowerCase(),
     };
 
     // Pass row as positional array so values are appended regardless of ExcelJS column keys
@@ -303,7 +315,7 @@ app.post('/api/licenses', async (req, res) => {
   }
 });
 
-app.get('/api/check-now', async (req, res) => {
+app.get(['/api/check-now', '/check-now'], async (req, res) => {
   try {
     await checkExpiringLicenses();
     res.json({ message: 'Manual expiration check completed.' });
