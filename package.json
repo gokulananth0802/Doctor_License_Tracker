@@ -1,0 +1,17 @@
+{
+  "name": "doctor-license-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Doctor License Manager fullstack monorepo for Vercel deployment",
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^6.9.14"
+  }
+}

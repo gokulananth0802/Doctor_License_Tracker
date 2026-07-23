@@ -109,34 +109,42 @@ function extractCellValue(cell) {
 }
 
 async function readAllLicenses() {
-  await createWorkbookIfNeeded();
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(WORKBOOK_PATH);
-  const worksheet = workbook.getWorksheet(1);
-  if (!worksheet) return [];
-
-  const records = [];
-  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1) return;
-
-    const doctorName = extractCellValue(row.getCell(1));
-    const licenseType = extractCellValue(row.getCell(2));
-    const licenseNumber = extractCellValue(row.getCell(3));
-    const expiryDate = extractCellValue(row.getCell(4));
-    const notificationEmail = extractCellValue(row.getCell(5));
-
-    if (doctorName || licenseNumber) {
-      records.push({
-        doctorName,
-        licenseType,
-        licenseNumber,
-        expiryDate,
-        notificationEmail,
-      });
+  try {
+    await createWorkbookIfNeeded();
+    if (!fs.existsSync(WORKBOOK_PATH)) {
+      return [];
     }
-  });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(WORKBOOK_PATH);
+    const worksheet = workbook.getWorksheet(1);
+    if (!worksheet) return [];
 
-  return records;
+    const records = [];
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber === 1) return;
+
+      const doctorName = extractCellValue(row.getCell(1));
+      const licenseType = extractCellValue(row.getCell(2));
+      const licenseNumber = extractCellValue(row.getCell(3));
+      const expiryDate = extractCellValue(row.getCell(4));
+      const notificationEmail = extractCellValue(row.getCell(5));
+
+      if (doctorName || licenseNumber) {
+        records.push({
+          doctorName,
+          licenseType,
+          licenseNumber,
+          expiryDate,
+          notificationEmail,
+        });
+      }
+    });
+
+    return records;
+  } catch (err) {
+    console.error('Error reading licenses file:', err);
+    return [];
+  }
 }
 
 function parseExpiryDate(value) {
