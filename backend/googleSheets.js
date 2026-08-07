@@ -116,8 +116,20 @@ function getSheetsClient() {
     );
   }
 
-  // Vercel sometimes double-escapes newlines in env vars
-  const privateKey = rawKey.replace(/\\n/g, '\n');
+  // Handle all private key escaping variants:
+  // 1. JSON-style with literal \n  →  replace with real newlines
+  // 2. Double-escaped \\n from Vercel  →  replace with real newlines
+  // 3. Surrounded by quotes  →  strip them
+  let privateKey = rawKey;
+  // Strip surrounding quotes if present
+  if ((privateKey.startsWith('"') && privateKey.endsWith('"')) ||
+      (privateKey.startsWith("'") && privateKey.endsWith("'"))) {
+    privateKey = privateKey.slice(1, -1);
+  }
+  // Replace escaped newlines with real newlines
+  privateKey = privateKey.replace(/\\n/g, '\n');
+
+  console.log(`Google Sheets auth: email=${email}, sheetId=${sheetId}, keyLength=${privateKey.length}, keyStart=${privateKey.substring(0, 30)}...`);
 
   const auth = new google.auth.GoogleAuth({
     credentials: {
@@ -133,6 +145,26 @@ function getSheetsClient() {
   return { sheets: _sheetsClient, spreadsheetId: _sheetId };
 }
 
+let _tabName = null;
+
+/**
+ * Dynamically resolves the title of the first sheet tab from the Google Sheet metadata.
+ */
+async function getTabName() {
+  if (_tabName) return _tabName;
+  const { sheets, spreadsheetId } = getSheetsClient();
+  const res = await withRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties.title',
+    })
+  );
+  const title = res.data.sheets?.[0]?.properties?.title || 'Sheet1';
+  _tabName = `'${title.replace(/'/g, "\\'")}'`;
+  console.log(`Google Sheets: Resolved active sheet tab name to ${_tabName}`);
+  return _tabName;
+}
+
 // ---------------------------------------------------------------------------
 // Header initialisation
 // ---------------------------------------------------------------------------
@@ -143,11 +175,12 @@ function getSheetsClient() {
  */
 async function ensureHeaders() {
   const { sheets, spreadsheetId } = getSheetsClient();
+  const tab = await getTabName();
 
   const res = await withRetry(() =>
     sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${SHEET_RANGE}!A1:R1`,
+      range: `${tab}!A1:R1`,
     })
   );
 
@@ -158,7 +191,7 @@ async function ensureHeaders() {
     await withRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${SHEET_RANGE}!A1:R1`,
+        range: `${tab}!A1:R1`,
         valueInputOption: 'RAW',
         requestBody: {
           values: [HEADER_ROW],
@@ -181,11 +214,12 @@ async function readAllLicenses() {
   try {
     await ensureHeaders();
     const { sheets, spreadsheetId } = getSheetsClient();
+    const tab = await getTabName();
 
     const res = await withRetry(() =>
       sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${SHEET_RANGE}!A2:R`,
+        range: `${tab}!A2:R`,
       })
     );
 
@@ -222,13 +256,14 @@ async function readAllLicenses() {
 async function addLicense(licenseData) {
   await ensureHeaders();
   const { sheets, spreadsheetId } = getSheetsClient();
+  const tab = await getTabName();
 
   const rowValues = COLUMN_KEYS.map((key) => licenseData[key] || '');
 
   await withRetry(() =>
     sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: `${SHEET_RANGE}!A:R`,
+      range: `${tab}!A:R`,
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
       requestBody: {
@@ -250,6 +285,7 @@ async function addBulkLicenses(licensesArray) {
 
   await ensureHeaders();
   const { sheets, spreadsheetId } = getSheetsClient();
+  const tab = await getTabName();
 
   const rows = licensesArray.map((lic) =>
     COLUMN_KEYS.map((key) => lic[key] || '')
@@ -258,7 +294,7 @@ async function addBulkLicenses(licensesArray) {
   await withRetry(() =>
     sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: `${SHEET_RANGE}!A:R`,
+      range: `${tab}!A:R`,
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
       requestBody: {
@@ -278,12 +314,13 @@ async function addBulkLicenses(licensesArray) {
  */
 async function deleteLicense(id) {
   const { sheets, spreadsheetId } = getSheetsClient();
+  const tab = await getTabName();
 
   // 1. Read all IDs to find the row number
   const res = await withRetry(() =>
     sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${SHEET_RANGE}!A:A`,
+      range: `${tab}!A:A`,
     })
   );
 
