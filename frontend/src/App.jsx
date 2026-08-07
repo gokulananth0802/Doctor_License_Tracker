@@ -508,17 +508,7 @@ function App() {
             <p style={styles.authSubtitle}>Credential Management Portal</p>
           </div>
 
-          <div style={styles.demoBox}>
-            <div style={{ fontWeight: '600', marginBottom: '4px', fontSize: '13px', color: '#1e3a8a' }}>
-              Demo Authentication Access:
-            </div>
-            <div style={{ fontSize: '13px', color: '#334155' }}>
-              <strong>Office ID:</strong> {DEMO_OFFICE_ID} &nbsp;|&nbsp; <strong>Password:</strong> {DEMO_PASSWORD}
-            </div>
-            <button type="button" onClick={autofillDemoCredentials} style={styles.autofillBtn}>
-              Auto-fill Demo Credentials
-            </button>
-          </div>
+
 
           {authError && <div style={styles.errorBanner}>{authError}</div>}
 
@@ -1594,12 +1584,15 @@ const styles = {
   // LAYOUT
   layoutContainer: {
     display: 'flex',
-    minHeight: '100vh',
+    height: '100vh',
+    width: '100%',
+    overflow: 'hidden',
     background: '#f8fafc',
     fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
   },
   sidebar: {
     width: '250px',
+    height: '100vh',
     background: '#ffffff',
     borderRight: '1px solid #e2e8f0',
     display: 'flex',
@@ -1608,6 +1601,7 @@ const styles = {
     padding: '24px 16px',
     boxSizing: 'border-box',
     flexShrink: 0,
+    overflow: 'hidden',
   },
   sidebarHeader: {
     display: 'flex',
@@ -1684,6 +1678,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: 'auto',
   },
   logoutBtn: {
     padding: '6px 10px',
@@ -1699,8 +1694,11 @@ const styles = {
   // MAIN CONTENT
   mainContent: {
     flex: '1',
-    padding: '32px 40px',
+    height: '100vh',
     overflowY: 'auto',
+    padding: '32px 40px',
+    minWidth: 0,
+    boxSizing: 'border-box',
   },
   topHeader: {
     display: 'flex',
