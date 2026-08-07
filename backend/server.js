@@ -4,16 +4,12 @@ const ExcelJS = require('exceljs');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
-const fs = require('fs');
-const path = require('path');
+const googleSheets = require('./googleSheets');
 
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
-const WORKBOOK_PATH = process.env.VERCEL
-  ? path.join('/tmp', 'licenses.xlsx')
-  : path.join(__dirname, 'licenses.xlsx');
 
 const CREDENTIAL_TYPES = [
   'State Medical License',
@@ -34,99 +30,9 @@ const REMINDER_SCHEDULES = ['90 days', '60 days', '45 days', '30 days', '15 days
 app.use(cors());
 app.use(express.json());
 
-const TABLE_COLUMNS = [
-  { header: 'ID', key: 'id', width: 20 },
-  { header: 'Provider Name', key: 'providerName', width: 28 },
-  { header: 'Provider Tax ID / NPI', key: 'taxIdNpi', width: 24 },
-  { header: 'Credential Type', key: 'credentialType', width: 24 },
-  { header: 'Provider Number', key: 'providerNumber', width: 24 },
-  { header: 'Issuing Authority', key: 'issuingAuthority', width: 24 },
-  { header: 'Issue Date', key: 'issueDate', width: 18 },
-  { header: 'Expiration Date', key: 'expirationDate', width: 18 },
-  { header: 'Renewal Due Date', key: 'renewalDueDate', width: 18 },
-  { header: 'Reminder Schedule', key: 'reminderSchedule', width: 20 },
-  { header: 'Responsible Person', key: 'responsiblePerson', width: 24 },
-  { header: 'Coordinator Email', key: 'coordinatorEmail', width: 30 },
-  { header: 'Status', key: 'status', width: 18 },
-  { header: 'Renewal Submitted Date', key: 'renewalSubmittedDate', width: 22 },
-  { header: 'Renewal Completed Date', key: 'renewalCompletedDate', width: 22 },
-  { header: 'Last Reminder Sent', key: 'lastReminderSent', width: 20 },
-  { header: 'Next Reminder Date', key: 'nextReminderDate', width: 20 },
-  { header: 'Created At', key: 'createdAt', width: 24 },
-];
-
-function applyHeaderStyle(headerRow) {
-  headerRow.eachCell((cell) => {
-    cell.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF1E293B' },
-      bgColor: { argb: 'FF1E293B' },
-    };
-    cell.font = {
-      bold: true,
-      color: { argb: 'FFFFFFFF' },
-      size: 11,
-    };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-  });
-}
-
-async function createWorkbookIfNeeded() {
-  if (!fs.existsSync(WORKBOOK_PATH)) {
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('licenses');
-    worksheet.columns = TABLE_COLUMNS;
-    applyHeaderStyle(worksheet.getRow(1));
-    await workbook.xlsx.writeFile(WORKBOOK_PATH);
-    console.log(`Created new workbook at ${WORKBOOK_PATH}`);
-  } else {
-    // Check if existing file needs schema header migration
-    try {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(WORKBOOK_PATH);
-      const worksheet = workbook.getWorksheet(1);
-      if (worksheet) {
-        const headerCell = extractCellValue(worksheet.getRow(1).getCell(1));
-        if (headerCell === 'Doctor Name' || worksheet.columns.length < 18) {
-          const records = await readAllLicenses();
-          const newWorkbook = new ExcelJS.Workbook();
-          const newSheet = newWorkbook.addWorksheet('licenses');
-          newSheet.columns = TABLE_COLUMNS;
-          applyHeaderStyle(newSheet.getRow(1));
-
-          records.forEach((rec) => {
-            newSheet.addRow([
-              rec.id,
-              rec.providerName,
-              rec.taxIdNpi,
-              rec.credentialType,
-              rec.providerNumber,
-              rec.issuingAuthority,
-              rec.issueDate,
-              rec.expirationDate,
-              rec.renewalDueDate,
-              rec.reminderSchedule,
-              rec.responsiblePerson,
-              rec.coordinatorEmail,
-              rec.status,
-              rec.renewalSubmittedDate,
-              rec.renewalCompletedDate,
-              rec.lastReminderSent,
-              rec.nextReminderDate,
-              rec.createdAt,
-            ]);
-          });
-
-          await newWorkbook.xlsx.writeFile(WORKBOOK_PATH);
-          console.log(`Migrated existing licenses workbook at ${WORKBOOK_PATH} to 18-column schema.`);
-        }
-      }
-    } catch (err) {
-      console.warn('Error during workbook schema check/migration:', err.message);
-    }
-  }
-}
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -191,116 +97,9 @@ function validatePayload(payload) {
   return Object.keys(errors).length ? errors : null;
 }
 
-function extractCellValue(cell) {
-  if (!cell || cell.value === null || cell.value === undefined) return '';
-  const val = cell.value;
-  if (val instanceof Date) {
-    return val.toISOString().split('T')[0];
-  }
-  if (typeof val === 'object') {
-    if (val.result !== undefined) return String(val.result).trim();
-    if (val.text !== undefined) return String(val.text).trim();
-    if (Array.isArray(val.richText)) return val.richText.map((t) => t.text).join('').trim();
-  }
-  return String(val).trim();
-}
-
-async function readAllLicenses() {
-  try {
-    await createWorkbookIfNeeded();
-    if (!fs.existsSync(WORKBOOK_PATH)) {
-      return [];
-    }
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(WORKBOOK_PATH);
-    const worksheet = workbook.getWorksheet(1);
-    if (!worksheet) return [];
-
-    const records = [];
-    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-      if (rowNumber === 1) return;
-
-      const c1 = extractCellValue(row.getCell(1));
-      const c2 = extractCellValue(row.getCell(2));
-      const c3 = extractCellValue(row.getCell(3));
-      const c4 = extractCellValue(row.getCell(4));
-      const c5 = extractCellValue(row.getCell(5));
-
-      // Handle old format (Doctor Name, License Type, License Number, Expiry Date, Notification Email)
-      if (c1 && !c1.startsWith('LIC-') && c1.length < 15 && (!row.getCell(6).value || row.cellCount <= 5)) {
-        records.push({
-          id: `LIC-${rowNumber}-${Date.now()}`,
-          providerName: c1,
-          taxIdNpi: 'N/A',
-          credentialType: c2 || 'State Medical License',
-          providerNumber: c3 || 'N/A',
-          issuingAuthority: 'State Board',
-          issueDate: '',
-          expirationDate: c4,
-          renewalDueDate: c4,
-          reminderSchedule: '60 days',
-          responsiblePerson: 'Credentialing Coordinator',
-          coordinatorEmail: c5,
-          status: getDaysRemaining(c4) < 0 ? 'Expired' : 'Active',
-          renewalSubmittedDate: '',
-          renewalCompletedDate: '',
-          lastReminderSent: '',
-          nextReminderDate: '',
-          createdAt: new Date().toISOString(),
-        });
-        return;
-      }
-
-      // New format reading
-      const id = c1 || `LIC-${rowNumber}`;
-      const providerName = c2;
-      const taxIdNpi = c3;
-      const credentialType = c4;
-      const providerNumber = c5;
-      const issuingAuthority = extractCellValue(row.getCell(6));
-      const issueDate = extractCellValue(row.getCell(7));
-      const expirationDate = extractCellValue(row.getCell(8));
-      const renewalDueDate = extractCellValue(row.getCell(9));
-      const reminderSchedule = extractCellValue(row.getCell(10)) || '30 days';
-      const responsiblePerson = extractCellValue(row.getCell(11));
-      const coordinatorEmail = extractCellValue(row.getCell(12));
-      const status = extractCellValue(row.getCell(13)) || 'Active';
-      const renewalSubmittedDate = extractCellValue(row.getCell(14));
-      const renewalCompletedDate = extractCellValue(row.getCell(15));
-      const lastReminderSent = extractCellValue(row.getCell(16));
-      const nextReminderDate = extractCellValue(row.getCell(17));
-      const createdAt = extractCellValue(row.getCell(18)) || new Date().toISOString();
-
-      if (providerName || providerNumber) {
-        records.push({
-          id,
-          providerName,
-          taxIdNpi,
-          credentialType,
-          providerNumber,
-          issuingAuthority,
-          issueDate,
-          expirationDate,
-          renewalDueDate,
-          reminderSchedule,
-          responsiblePerson,
-          coordinatorEmail,
-          status,
-          renewalSubmittedDate,
-          renewalCompletedDate,
-          lastReminderSent,
-          nextReminderDate,
-          createdAt,
-        });
-      }
-    });
-
-    return records;
-  } catch (err) {
-    console.error('Error reading licenses file:', err);
-    return [];
-  }
-}
+// ---------------------------------------------------------------------------
+// Date helpers
+// ---------------------------------------------------------------------------
 
 function parseExpiryDate(value) {
   if (!value) return new Date(NaN);
@@ -325,6 +124,10 @@ function parseReminderDays(reminderSchedule) {
   const match = String(reminderSchedule).match(/\d+/);
   return match ? parseInt(match[0], 10) : 30;
 }
+
+// ---------------------------------------------------------------------------
+// Email
+// ---------------------------------------------------------------------------
 
 function isSmtpConfigured() {
   const user = process.env.SMTP_USER || '';
@@ -387,7 +190,7 @@ async function sendAlertEmail(record, daysRemaining) {
 }
 
 async function checkExpiringLicenses() {
-  const licenses = await readAllLicenses();
+  const licenses = await googleSheets.readAllLicenses();
 
   for (const license of licenses) {
     const daysRemaining = getDaysRemaining(license.expirationDate);
@@ -403,15 +206,71 @@ async function checkExpiringLicenses() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// API Routes
+// ---------------------------------------------------------------------------
+
+// List all licenses
 app.get(['/api/licenses', '/licenses'], async (req, res) => {
   try {
-    const licenses = await readAllLicenses();
+    const licenses = await googleSheets.readAllLicenses();
     res.json(licenses);
   } catch (error) {
-    res.status(500).json({ message: 'Unable to read licenses file.', error: error.message });
+    console.error('GET /api/licenses error:', error.message);
+    res.status(500).json({ message: 'Unable to read licenses from Google Sheets.', error: error.message });
   }
 });
 
+// Export licenses as .xlsx download (reads from Google Sheets, generates xlsx in memory)
+app.get(['/api/licenses/export', '/licenses/export'], async (req, res) => {
+  try {
+    const licenses = await googleSheets.readAllLicenses();
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('licenses');
+
+    worksheet.columns = googleSheets.HEADER_ROW.map((header, i) => ({
+      header,
+      key: googleSheets.COLUMN_KEYS[i],
+      width: 24,
+    }));
+
+    // Style header row
+    const headerRow = worksheet.getRow(1);
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF1E293B' },
+        bgColor: { argb: 'FF1E293B' },
+      };
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    // Add data rows
+    for (const lic of licenses) {
+      worksheet.addRow(googleSheets.COLUMN_KEYS.map((key) => lic[key] || ''));
+    }
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="licenses.xlsx"'
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error('Export error:', error.message);
+    res.status(500).json({ message: 'Failed to export licenses.', error: error.message });
+  }
+});
+
+// Add a single license
 app.post(['/api/licenses', '/licenses'], async (req, res) => {
   try {
     let body = req.body;
@@ -424,14 +283,6 @@ app.post(['/api/licenses', '/licenses'], async (req, res) => {
     const errors = validatePayload(body);
     if (errors) {
       return res.status(400).json({ message: 'Validation failed.', errors });
-    }
-
-    await createWorkbookIfNeeded();
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(WORKBOOK_PATH);
-    let worksheet = workbook.getWorksheet(1);
-    if (!worksheet) {
-      worksheet = workbook.addWorksheet('licenses');
     }
 
     const newId = `LIC-${Date.now()}`;
@@ -456,28 +307,7 @@ app.post(['/api/licenses', '/licenses'], async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
-    worksheet.addRow([
-      savedLicense.id,
-      savedLicense.providerName,
-      savedLicense.taxIdNpi,
-      savedLicense.credentialType,
-      savedLicense.providerNumber,
-      savedLicense.issuingAuthority,
-      savedLicense.issueDate,
-      savedLicense.expirationDate,
-      savedLicense.renewalDueDate,
-      savedLicense.reminderSchedule,
-      savedLicense.responsiblePerson,
-      savedLicense.coordinatorEmail,
-      savedLicense.status,
-      savedLicense.renewalSubmittedDate,
-      savedLicense.renewalCompletedDate,
-      savedLicense.lastReminderSent,
-      savedLicense.nextReminderDate,
-      savedLicense.createdAt,
-    ]);
-
-    await workbook.xlsx.writeFile(WORKBOOK_PATH);
+    await googleSheets.addLicense(savedLicense);
 
     const daysRemaining = getDaysRemaining(savedLicense.expirationDate);
     const reminderDays = parseReminderDays(savedLicense.reminderSchedule);
@@ -499,41 +329,166 @@ app.post(['/api/licenses', '/licenses'], async (req, res) => {
     });
   } catch (error) {
     console.error('Error in POST /api/licenses:', error);
-    let errorMessage = 'Unable to save license.';
-    if (error.code === 'EBUSY' || error.code === 'EPERM') {
-      errorMessage = 'The file "licenses.xlsx" is currently open in Microsoft Excel or another program. Please close it and try again.';
-    } else if (error.message) {
-      errorMessage = `Unable to save license: ${error.message}`;
-    }
-
-    res.status(500).json({ message: errorMessage, error: error.message });
+    res.status(500).json({ message: `Unable to save license: ${error.message}`, error: error.message });
   }
 });
 
+// Download Excel Template for Bulk Register
+app.get(['/api/licenses/template', '/licenses/template'], async (req, res) => {
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('bulk_import_template');
+
+    const TEMPLATE_COLUMNS = [
+      { header: 'Provider Name', key: 'providerName', width: 28 },
+      { header: 'Provider Tax ID / NPI', key: 'taxIdNpi', width: 24 },
+      { header: 'Credential Type', key: 'credentialType', width: 24 },
+      { header: 'Provider Number', key: 'providerNumber', width: 24 },
+      { header: 'Issuing Authority', key: 'issuingAuthority', width: 24 },
+      { header: 'Issue Date', key: 'issueDate', width: 18 },
+      { header: 'Expiration Date', key: 'expirationDate', width: 18 },
+      { header: 'Renewal Due Date', key: 'renewalDueDate', width: 18 },
+      { header: 'Reminder Schedule', key: 'reminderSchedule', width: 20 },
+      { header: 'Responsible Person', key: 'responsiblePerson', width: 24 },
+      { header: 'Coordinator Email', key: 'coordinatorEmail', width: 30 },
+      { header: 'Status', key: 'status', width: 18 },
+      { header: 'Renewal Submitted Date', key: 'renewalSubmittedDate', width: 22 },
+      { header: 'Renewal Completed Date', key: 'renewalCompletedDate', width: 22 },
+      { header: 'Last Reminder Sent', key: 'lastReminderSent', width: 20 },
+      { header: 'Next Reminder Date', key: 'nextReminderDate', width: 20 },
+    ];
+
+    worksheet.columns = TEMPLATE_COLUMNS;
+
+    // Style header
+    const headerRow = worksheet.getRow(1);
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF1E293B' },
+        bgColor: { argb: 'FF1E293B' },
+      };
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    // Sample data rows
+    worksheet.addRow([
+      'Dr. Jane Smith', '1982740192', 'State Medical License', 'MD-998822',
+      'State Medical Board', '2022-05-10', '2027-05-10', '2027-04-10',
+      '60 days', 'Coordinator Sarah', 'sarah@clinic.org', 'Active',
+      '', '', '', ''
+    ]);
+
+    worksheet.addRow([
+      'Dr. Robert Chen', '1298402910', 'DEA Registration', 'DEA-445566',
+      'Drug Enforcement Administration', '2021-11-01', '2026-11-01', '2026-10-01',
+      '30 days', 'Coordinator Michael', 'mchen@health.org', 'Active',
+      '', '', '', ''
+    ]);
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="doctor_licenses_template.xlsx"'
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to generate Excel template.', error: error.message });
+  }
+});
+
+// Bulk Register Endpoint
+app.post(['/api/licenses/bulk', '/licenses/bulk'], async (req, res) => {
+  try {
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {}
+    }
+
+    const licenses = Array.isArray(body) ? body : (body.licenses || []);
+    if (!licenses || !Array.isArray(licenses) || licenses.length === 0) {
+      return res.status(400).json({ message: 'No license records provided for bulk import.' });
+    }
+
+    const preparedLicenses = [];
+    const errors = [];
+
+    licenses.forEach((item, index) => {
+      const providerName = String(item.providerName || item.doctorName || item['Provider Name'] || '').trim();
+      const taxIdNpi = String(item.taxIdNpi || item['Provider Tax ID / NPI'] || item['Tax ID / NPI'] || '').trim();
+      const credentialType = String(item.credentialType || item.licenseType || item['Credential Type'] || 'State Medical License').trim();
+      const providerNumber = String(item.providerNumber || item.licenseNumber || item['Provider Number'] || '').trim();
+      const issuingAuthority = String(item.issuingAuthority || item['Issuing Authority'] || 'State Board').trim();
+      const issueDate = item.issueDate || item['Issue Date'] || '';
+      const expirationDate = item.expirationDate || item.expiryDate || item['Expiration Date'] || '';
+      const renewalDueDate = item.renewalDueDate || item['Renewal Due Date'] || expirationDate;
+      const reminderSchedule = item.reminderSchedule || item['Reminder Schedule'] || '30 days';
+      const responsiblePerson = String(item.responsiblePerson || item['Responsible Person'] || 'Coordinator Staff').trim();
+      const coordinatorEmail = String(item.coordinatorEmail || item.notificationEmail || item['Coordinator Email'] || '').trim().toLowerCase();
+      const status = item.status || item['Status'] || 'Active';
+      const renewalSubmittedDate = item.renewalSubmittedDate || item['Renewal Submitted Date'] || '';
+      const renewalCompletedDate = item.renewalCompletedDate || item['Renewal Completed Date'] || '';
+      const lastReminderSent = item.lastReminderSent || item['Last Reminder Sent'] || '';
+      const nextReminderDate = item.nextReminderDate || item['Next Reminder Date'] || '';
+
+      if (!providerName || !expirationDate) {
+        errors.push(`Row ${index + 1}: Provider Name and Expiration Date are required.`);
+        return;
+      }
+
+      const newId = item.id || item['ID'] || `LIC-BULK-${Date.now()}-${index}`;
+
+      preparedLicenses.push({
+        id: newId,
+        providerName,
+        taxIdNpi,
+        credentialType,
+        providerNumber,
+        issuingAuthority,
+        issueDate,
+        expirationDate,
+        renewalDueDate,
+        reminderSchedule,
+        responsiblePerson,
+        coordinatorEmail,
+        status,
+        renewalSubmittedDate,
+        renewalCompletedDate,
+        lastReminderSent,
+        nextReminderDate,
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    const addedCount = await googleSheets.addBulkLicenses(preparedLicenses);
+
+    res.json({
+      message: `Successfully imported ${addedCount} provider credential(s).`,
+      addedCount,
+      errors: errors.length > 0 ? errors : null,
+    });
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({ message: 'Unable to save bulk licenses.', error: error.message });
+  }
+});
+
+// Delete a license by ID
 app.delete(['/api/licenses/:id', '/licenses/:id'], async (req, res) => {
   try {
     const { id } = req.params;
-    await createWorkbookIfNeeded();
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(WORKBOOK_PATH);
-    const worksheet = workbook.getWorksheet(1);
+    const deleted = await googleSheets.deleteLicense(id);
 
-    if (!worksheet) {
-      return res.status(404).json({ message: 'License file is empty.' });
-    }
-
-    let targetRowNumber = -1;
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      const cellId = extractCellValue(row.getCell(1));
-      if (cellId === id) {
-        targetRowNumber = rowNumber;
-      }
-    });
-
-    if (targetRowNumber > 1) {
-      worksheet.spliceRows(targetRowNumber, 1);
-      await workbook.xlsx.writeFile(WORKBOOK_PATH);
+    if (deleted) {
       return res.json({ message: 'License deleted successfully.', id });
     }
 
@@ -543,6 +498,7 @@ app.delete(['/api/licenses/:id', '/licenses/:id'], async (req, res) => {
   }
 });
 
+// Manual expiration check trigger
 app.get(['/api/check-now', '/check-now'], async (req, res) => {
   try {
     await checkExpiringLicenses();
@@ -552,9 +508,11 @@ app.get(['/api/check-now', '/check-now'], async (req, res) => {
   }
 });
 
-async function startServer() {
-  await createWorkbookIfNeeded();
+// ---------------------------------------------------------------------------
+// Server startup
+// ---------------------------------------------------------------------------
 
+async function startServer() {
   if (!process.env.VERCEL) {
     cron.schedule('0 0 * * *', async () => {
       console.log('Running midnight expiration check...');
@@ -567,15 +525,6 @@ async function startServer() {
   }
 }
 
-app.use(async (req, res, next) => {
-  try {
-    await createWorkbookIfNeeded();
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
-
 module.exports = app;
 
 if (!process.env.VERCEL) {
@@ -584,4 +533,3 @@ if (!process.env.VERCEL) {
     process.exit(1);
   });
 }
-

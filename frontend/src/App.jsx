@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 
 const DEMO_OFFICE_ID = 'DEMO-OFFICE-101';
 const DEMO_PASSWORD = 'Password123!';
@@ -67,13 +68,21 @@ function App() {
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('All');
   const [selectedLicenseForModal, setSelectedLicenseForModal] = useState(null);
 
-  // Modal & Form state
+  // Modal & Form state (Single vs Bulk)
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalRegisterTab, setModalRegisterTab] = useState('single'); // 'single' | 'bulk'
   const [form, setForm] = useState(initialForm);
   const [errors, setErrors] = useState({});
   const [formSuccessMessage, setFormSuccessMessage] = useState('');
   const [formErrorMessage, setFormErrorMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+
+  // Bulk License state
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkRecords, setBulkRecords] = useState([]);
+  const [bulkError, setBulkError] = useState('');
+  const [bulkSuccess, setBulkSuccess] = useState('');
+  const [isUploadingBulk, setIsUploadingBulk] = useState(false);
 
   // Active side section
   const [activeSection, setActiveSection] = useState('Dashboard');
@@ -225,6 +234,167 @@ function App() {
     }
   };
 
+  // Bulk License Handlers
+  const handleDownloadTemplate = async () => {
+    try {
+      const urls = [];
+      if (import.meta.env.VITE_API_URL) {
+        const base = import.meta.env.VITE_API_URL.replace(/\/$/, '');
+        urls.push(`${base}/template`);
+      }
+      urls.push('/api/licenses/template');
+      urls.push('http://localhost:5000/api/licenses/template');
+
+      for (const url of urls) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            const blob = await response.blob();
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.download = 'doctor_licenses_template.xlsx';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(downloadUrl);
+            return;
+          }
+        } catch (err) {}
+      }
+
+      // Client-side fallback via XLSX (without ID, auto-generated on import)
+      const headers = [
+        'Provider Name',
+        'Provider Tax ID / NPI',
+        'Credential Type',
+        'Provider Number',
+        'Issuing Authority',
+        'Issue Date',
+        'Expiration Date',
+        'Renewal Due Date',
+        'Reminder Schedule',
+        'Responsible Person',
+        'Coordinator Email',
+        'Status',
+        'Renewal Submitted Date',
+        'Renewal Completed Date',
+        'Last Reminder Sent',
+        'Next Reminder Date',
+      ];
+      const sampleRow1 = [
+        'Dr. Jane Smith',
+        '1982740192',
+        'State Medical License',
+        'MD-998822',
+        'State Medical Board',
+        '2022-05-10',
+        '2027-05-10',
+        '2027-04-10',
+        '60 days',
+        'Coordinator Sarah',
+        'sarah@clinic.org',
+        'Active',
+        '',
+        '',
+        '',
+        '',
+      ];
+      const sampleRow2 = [
+        'Dr. Robert Chen',
+        '1298402910',
+        'DEA Registration',
+        'DEA-445566',
+        'Drug Enforcement Administration',
+        '2021-11-01',
+        '2026-11-01',
+        '2026-10-01',
+        '30 days',
+        'Coordinator Michael',
+        'mchen@health.org',
+        'Active',
+        '',
+        '',
+        '',
+        '',
+      ];
+      const ws = XLSX.utils.aoa_to_sheet([headers, sampleRow1, sampleRow2]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'bulk_import_template');
+      XLSX.writeFile(wb, 'doctor_licenses_template.xlsx');
+    } catch (err) {
+      console.error('Failed to download template:', err);
+    }
+  };
+
+  const handleBulkFileChange = (e) => {
+    setBulkError('');
+    setBulkSuccess('');
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setBulkFile(file);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const rawData = XLSX.utils.sheet_to_json(ws);
+
+        if (!rawData || rawData.length === 0) {
+          setBulkError('Uploaded Excel file contains no data rows.');
+          setBulkRecords([]);
+          return;
+        }
+
+        setBulkRecords(rawData);
+      } catch (err) {
+        setBulkError('Failed to parse Excel file. Please make sure it is a valid .xlsx or .xls file.');
+        setBulkRecords([]);
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleBulkSubmit = async () => {
+    if (!bulkRecords || bulkRecords.length === 0) {
+      setBulkError('Please upload a completed Excel file before saving.');
+      return;
+    }
+
+    setIsUploadingBulk(true);
+    setBulkError('');
+    setBulkSuccess('');
+
+    try {
+      const result = await callBackendApi('/api/licenses/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ licenses: bulkRecords }),
+      });
+
+      if (result.ok) {
+        setBulkSuccess(result.data?.message || `Successfully saved ${bulkRecords.length} credentials!`);
+        setBulkRecords([]);
+        setBulkFile(null);
+        fetchLicenses();
+        setTimeout(() => {
+          setIsModalOpen(false);
+          setBulkSuccess('');
+          setModalRegisterTab('single');
+        }, 1500);
+      } else {
+        setBulkError(result.data?.message || result.message || 'Failed to save bulk credentials.');
+      }
+    } catch (err) {
+      setBulkError('Failed to save bulk credentials. Please try again.');
+    } finally {
+      setIsUploadingBulk(false);
+    }
+  };
+
   const handleDeleteLicense = async (id) => {
     if (!window.confirm('Are you sure you want to delete this credential record?')) return;
     try {
@@ -234,6 +404,70 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to delete license:', err);
+    }
+  };
+
+  // Export current licenses.xlsx file handler
+  const handleExportLicenses = async () => {
+    try {
+      const urls = [];
+      if (import.meta.env.VITE_API_URL) {
+        const base = import.meta.env.VITE_API_URL.replace(/\/$/, '');
+        urls.push(`${base}/export`);
+      }
+      urls.push('/api/licenses/export');
+      urls.push('http://localhost:5000/api/licenses/export');
+
+      for (const url of urls) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            const blob = await response.blob();
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.download = 'licenses.xlsx';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(downloadUrl);
+            return;
+          }
+        } catch (err) {}
+      }
+
+      // Client-side fallback export using current licenses state via XLSX
+      if (licenses && licenses.length > 0) {
+        const exportData = licenses.map((lic) => ({
+          'ID': lic.id || '',
+          'Provider Name': lic.providerName || lic.doctorName || '',
+          'Provider Tax ID / NPI': lic.taxIdNpi || '',
+          'Credential Type': lic.credentialType || lic.licenseType || '',
+          'Provider Number': lic.providerNumber || lic.licenseNumber || '',
+          'Issuing Authority': lic.issuingAuthority || '',
+          'Issue Date': lic.issueDate || '',
+          'Expiration Date': lic.expirationDate || lic.expiryDate || '',
+          'Renewal Due Date': lic.renewalDueDate || '',
+          'Reminder Schedule': lic.reminderSchedule || '',
+          'Responsible Person': lic.responsiblePerson || '',
+          'Coordinator Email': lic.coordinatorEmail || lic.notificationEmail || '',
+          'Status': lic.status || '',
+          'Renewal Submitted Date': lic.renewalSubmittedDate || '',
+          'Renewal Completed Date': lic.renewalCompletedDate || '',
+          'Last Reminder Sent': lic.lastReminderSent || '',
+          'Next Reminder Date': lic.nextReminderDate || '',
+          'Created At': lic.createdAt || '',
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(exportData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'licenses');
+        XLSX.writeFile(wb, 'licenses.xlsx');
+      } else {
+        alert('No credential records available to export.');
+      }
+    } catch (err) {
+      console.error('Export failed:', err);
     }
   };
 
@@ -374,19 +608,28 @@ function App() {
             </p>
           </div>
 
-          {/* ADD NEW LICENSE BUTTON */}
-          <button
-            onClick={() => {
-              setForm(initialForm);
-              setErrors({});
-              setFormErrorMessage('');
-              setFormSuccessMessage('');
-              setIsModalOpen(true);
-            }}
-            style={styles.addLicenseBtn}
-          >
-            Add new License
-          </button>
+          {/* HEADER ACTION BUTTONS */}
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <button
+              onClick={handleExportLicenses}
+              style={styles.secondaryButton}
+              title="Download current licenses.xlsx spreadsheet"
+            >
+              Export Excel Sheet (.xlsx)
+            </button>
+            <button
+              onClick={() => {
+                setForm(initialForm);
+                setErrors({});
+                setFormErrorMessage('');
+                setFormSuccessMessage('');
+                setIsModalOpen(true);
+              }}
+              style={styles.addLicenseBtn}
+            >
+              Add new License
+            </button>
+          </div>
         </header>
 
         {/* METRICS STATS BAR */}
@@ -756,18 +999,18 @@ function App() {
       )}
 
       {/* ---------------------------------------------------- */}
-      {/* ADD NEW LICENSE MODAL FORM */}
+      {/* ADD NEW LICENSE MODAL FORM (SINGLE & BULK TABS) */}
       {/* ---------------------------------------------------- */}
       {isModalOpen && (
         <div style={styles.modalBackdrop}>
-          <div style={styles.modalCard}>
+          <div style={{ ...styles.modalCard, maxWidth: '740px' }}>
             <div style={styles.modalHeader}>
               <div>
-                <h2 style={{ margin: 0, fontSize: '18px', color: '#0f172a', fontWeight: '700' }}>
-                  Register New Provider Credential
+                <h2 style={{ margin: 0, fontSize: '20px', color: '#0f172a', fontWeight: '700' }}>
+                  Add New License & Credentials
                 </h2>
                 <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: '13px' }}>
-                  Enter credential parameters to establish compliance tracking.
+                  Register a single doctor license or upload multiple credentials in bulk via Excel template.
                 </p>
               </div>
               <button onClick={() => setIsModalOpen(false)} style={styles.closeModalBtn}>
@@ -775,277 +1018,452 @@ function App() {
               </button>
             </div>
 
-            {formSuccessMessage && <div style={styles.successBanner}>{formSuccessMessage}</div>}
-            {formErrorMessage && <div style={styles.errorBanner}>{formErrorMessage}</div>}
+            {/* REGISTER MODE TAB BUTTONS */}
+            <div style={styles.registerTabContainer}>
+              <button
+                type="button"
+                onClick={() => setModalRegisterTab('single')}
+                style={{
+                  ...styles.registerTabBtn,
+                  ...(modalRegisterTab === 'single' ? styles.activeRegisterTabBtn : {}),
+                }}
+              >
+                Single License Register
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalRegisterTab('bulk')}
+                style={{
+                  ...styles.registerTabBtn,
+                  ...(modalRegisterTab === 'bulk' ? styles.activeRegisterTabBtn : {}),
+                }}
+              >
+                Bulk License Register
+              </button>
+            </div>
 
-            <form onSubmit={handleFormSubmit} style={{ display: 'grid', gap: '16px' }}>
-              {/* SECTION 1: PROVIDER INFORMATION */}
-              <div style={styles.formSection}>
-                <div style={styles.sectionHeading}>1. Provider Information</div>
-                <div style={styles.formGrid2}>
-                  <div>
-                    <label style={styles.label}>
-                      Provider Name <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      name="providerName"
-                      placeholder="e.g. Dr. Jane Smith"
-                      value={form.providerName}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.providerName ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.providerName && <div style={styles.fieldError}>{errors.providerName}</div>}
+            {modalRegisterTab === 'single' ? (
+              /* SINGLE LICENSE REGISTER FORM */
+              <>
+                {formSuccessMessage && <div style={styles.successBanner}>{formSuccessMessage}</div>}
+                {formErrorMessage && <div style={styles.errorBanner}>{formErrorMessage}</div>}
+
+                <form onSubmit={handleFormSubmit} style={{ display: 'grid', gap: '16px' }}>
+                  {/* SECTION 1: PROVIDER INFORMATION */}
+                  <div style={styles.formSection}>
+                    <div style={styles.sectionHeading}>1. Provider Information</div>
+                    <div style={styles.formGrid2}>
+                      <div>
+                        <label style={styles.label}>
+                          Provider Name <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          name="providerName"
+                          placeholder="e.g. Dr. Jane Smith"
+                          value={form.providerName}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.providerName ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.providerName && <div style={styles.fieldError}>{errors.providerName}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Provider Tax ID / NPI <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          name="taxIdNpi"
+                          placeholder="e.g. 1982736405"
+                          value={form.taxIdNpi}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.taxIdNpi ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.taxIdNpi && <div style={styles.fieldError}>{errors.taxIdNpi}</div>}
+                      </div>
+                    </div>
                   </div>
 
-                  <div>
-                    <label style={styles.label}>
-                      Provider Tax ID / NPI <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      name="taxIdNpi"
-                      placeholder="e.g. 1982736405"
-                      value={form.taxIdNpi}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.taxIdNpi ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.taxIdNpi && <div style={styles.fieldError}>{errors.taxIdNpi}</div>}
-                  </div>
-                </div>
-              </div>
+                  {/* SECTION 2: CREDENTIAL & ISSUING DETAILS */}
+                  <div style={styles.formSection}>
+                    <div style={styles.sectionHeading}>2. Credential & Expiration Details</div>
+                    <div style={styles.formGrid2}>
+                      <div>
+                        <label style={styles.label}>
+                          Credential Type <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <select
+                          name="credentialType"
+                          value={form.credentialType}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.credentialType ? '#ef4444' : '#cbd5e1' }}
+                        >
+                          <option value="">Select Credential Type</option>
+                          {credentialOptions.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                        {errors.credentialType && <div style={styles.fieldError}>{errors.credentialType}</div>}
+                      </div>
 
-              {/* SECTION 2: CREDENTIAL & ISSUING DETAILS */}
-              <div style={styles.formSection}>
-                <div style={styles.sectionHeading}>2. Credential & Expiration Details</div>
-                <div style={styles.formGrid2}>
-                  <div>
-                    <label style={styles.label}>
-                      Credential Type <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <select
-                      name="credentialType"
-                      value={form.credentialType}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.credentialType ? '#ef4444' : '#cbd5e1' }}
+                      <div>
+                        <label style={styles.label}>
+                          Provider / License Number <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          name="providerNumber"
+                          placeholder="e.g. MD-987654"
+                          value={form.providerNumber}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.providerNumber ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.providerNumber && <div style={styles.fieldError}>{errors.providerNumber}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Issuing Authority <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          name="issuingAuthority"
+                          placeholder="e.g. Medicare / Medicaid / State Board"
+                          value={form.issuingAuthority}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.issuingAuthority ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.issuingAuthority && <div style={styles.fieldError}>{errors.issuingAuthority}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>Issue Date (Optional)</label>
+                        <input
+                          type="date"
+                          name="issueDate"
+                          value={form.issueDate}
+                          onChange={handleFormChange}
+                          style={styles.input}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Expiration Date <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          type="date"
+                          name="expirationDate"
+                          value={form.expirationDate}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.expirationDate ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.expirationDate && <div style={styles.fieldError}>{errors.expirationDate}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Renewal Due Date <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          type="date"
+                          name="renewalDueDate"
+                          value={form.renewalDueDate}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.renewalDueDate ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.renewalDueDate && <div style={styles.fieldError}>{errors.renewalDueDate}</div>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SECTION 3: REMINDERS & STAFF ASSIGNMENT */}
+                  <div style={styles.formSection}>
+                    <div style={styles.sectionHeading}>3. Reminders & Staff Assignment</div>
+                    <div style={styles.formGrid2}>
+                      <div>
+                        <label style={styles.label}>
+                          Reminder Schedule <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <select
+                          name="reminderSchedule"
+                          value={form.reminderSchedule}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.reminderSchedule ? '#ef4444' : '#cbd5e1' }}
+                        >
+                          {reminderScheduleOptions.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                        {errors.reminderSchedule && <div style={styles.fieldError}>{errors.reminderSchedule}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Responsible Person <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          name="responsiblePerson"
+                          placeholder="e.g. Credentialing Coordinator"
+                          value={form.responsiblePerson}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.responsiblePerson ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.responsiblePerson && <div style={styles.fieldError}>{errors.responsiblePerson}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Coordinator Email <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <input
+                          type="email"
+                          name="coordinatorEmail"
+                          placeholder="e.g. coordinator@clinic.com"
+                          value={form.coordinatorEmail}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.coordinatorEmail ? '#ef4444' : '#cbd5e1' }}
+                        />
+                        {errors.coordinatorEmail && <div style={styles.fieldError}>{errors.coordinatorEmail}</div>}
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>
+                          Status <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <select
+                          name="status"
+                          value={form.status}
+                          onChange={handleFormChange}
+                          style={{ ...styles.input, borderColor: errors.status ? '#ef4444' : '#cbd5e1' }}
+                        >
+                          {statusOptions.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                        {errors.status && <div style={styles.fieldError}>{errors.status}</div>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SECTION 4: OPTIONAL RENEWAL TRACKING */}
+                  <div style={styles.formSection}>
+                    <div style={styles.sectionHeading}>4. Optional Renewal Metrics</div>
+                    <div style={styles.formGrid2}>
+                      <div>
+                        <label style={styles.label}>Renewal Submitted Date</label>
+                        <input
+                          type="date"
+                          name="renewalSubmittedDate"
+                          value={form.renewalSubmittedDate}
+                          onChange={handleFormChange}
+                          style={styles.input}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>Renewal Completed Date</label>
+                        <input
+                          type="date"
+                          name="renewalCompletedDate"
+                          value={form.renewalCompletedDate}
+                          onChange={handleFormChange}
+                          style={styles.input}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>Last Reminder Sent</label>
+                        <input
+                          type="date"
+                          name="lastReminderSent"
+                          value={form.lastReminderSent}
+                          onChange={handleFormChange}
+                          style={styles.input}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={styles.label}>Next Reminder Date</label>
+                        <input
+                          type="date"
+                          name="nextReminderDate"
+                          value={form.nextReminderDate}
+                          onChange={handleFormChange}
+                          style={styles.input}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={styles.modalActions}>
+                    <button
+                      type="button"
+                      onClick={() => setIsModalOpen(false)}
+                      style={styles.cancelBtn}
                     >
-                      <option value="">Select Credential Type</option>
-                      {credentialOptions.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.credentialType && <div style={styles.fieldError}>{errors.credentialType}</div>}
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>
-                      Provider / License Number <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      name="providerNumber"
-                      placeholder="e.g. MD-987654"
-                      value={form.providerNumber}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.providerNumber ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.providerNumber && <div style={styles.fieldError}>{errors.providerNumber}</div>}
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>
-                      Issuing Authority <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      name="issuingAuthority"
-                      placeholder="e.g. Medicare / Medicaid / State Board"
-                      value={form.issuingAuthority}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.issuingAuthority ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.issuingAuthority && <div style={styles.fieldError}>{errors.issuingAuthority}</div>}
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>Issue Date (Optional)</label>
-                    <input
-                      type="date"
-                      name="issueDate"
-                      value={form.issueDate}
-                      onChange={handleFormChange}
-                      style={styles.input}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>
-                      Expiration Date <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      type="date"
-                      name="expirationDate"
-                      value={form.expirationDate}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.expirationDate ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.expirationDate && <div style={styles.fieldError}>{errors.expirationDate}</div>}
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>
-                      Renewal Due Date <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      type="date"
-                      name="renewalDueDate"
-                      value={form.renewalDueDate}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.renewalDueDate ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.renewalDueDate && <div style={styles.fieldError}>{errors.renewalDueDate}</div>}
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 3: REMINDERS & STAFF ASSIGNMENT */}
-              <div style={styles.formSection}>
-                <div style={styles.sectionHeading}>3. Reminders & Staff Assignment</div>
-                <div style={styles.formGrid2}>
-                  <div>
-                    <label style={styles.label}>
-                      Reminder Schedule <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <select
-                      name="reminderSchedule"
-                      value={form.reminderSchedule}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.reminderSchedule ? '#ef4444' : '#cbd5e1' }}
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSaving}
+                      style={styles.primaryButton}
                     >
-                      {reminderScheduleOptions.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.reminderSchedule && <div style={styles.fieldError}>{errors.reminderSchedule}</div>}
+                      {isSaving ? 'Saving Record...' : 'Save Credential'}
+                    </button>
                   </div>
+                </form>
+              </>
+            ) : (
+              /* BULK LICENSE REGISTER VIEW */
+              <div style={{ display: 'grid', gap: '18px' }}>
+                {bulkSuccess && <div style={styles.successBanner}>{bulkSuccess}</div>}
+                {bulkError && <div style={styles.errorBanner}>{bulkError}</div>}
 
-                  <div>
-                    <label style={styles.label}>
-                      Responsible Person <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      name="responsiblePerson"
-                      placeholder="e.g. Credentialing Coordinator"
-                      value={form.responsiblePerson}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.responsiblePerson ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.responsiblePerson && <div style={styles.fieldError}>{errors.responsiblePerson}</div>}
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>
-                      Coordinator Email <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <input
-                      type="email"
-                      name="coordinatorEmail"
-                      placeholder="e.g. coordinator@clinic.com"
-                      value={form.coordinatorEmail}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.coordinatorEmail ? '#ef4444' : '#cbd5e1' }}
-                    />
-                    {errors.coordinatorEmail && <div style={styles.fieldError}>{errors.coordinatorEmail}</div>}
-                  </div>
-
-                  <div>
-                    <label style={styles.label}>
-                      Status <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <select
-                      name="status"
-                      value={form.status}
-                      onChange={handleFormChange}
-                      style={{ ...styles.input, borderColor: errors.status ? '#ef4444' : '#cbd5e1' }}
+                {/* STEP 1: DOWNLOAD TEMPLATE */}
+                <div style={styles.bulkStepCard}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                    <div>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '15px', color: '#0f172a', fontWeight: '700' }}>
+                        1. Download Excel Template (.xlsx)
+                      </h4>
+                      <p style={{ margin: 0, fontSize: '13px', color: '#64748b' }}>
+                        Download the standardized 17-column Excel file template to fill out doctor credentials.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleDownloadTemplate}
+                      style={styles.secondaryButton}
                     >
-                      {statusOptions.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.status && <div style={styles.fieldError}>{errors.status}</div>}
+                      Download Template (.xlsx)
+                    </button>
                   </div>
                 </div>
-              </div>
 
-              {/* SECTION 4: OPTIONAL RENEWAL TRACKING */}
-              <div style={styles.formSection}>
-                <div style={styles.sectionHeading}>4. Optional Renewal Metrics</div>
-                <div style={styles.formGrid2}>
-                  <div>
-                    <label style={styles.label}>Renewal Submitted Date</label>
+                {/* STEP 2: UPLOAD FILE */}
+                <div style={styles.bulkStepCard}>
+                  <h4 style={{ margin: '0 0 6px', fontSize: '15px', color: '#0f172a', fontWeight: '700' }}>
+                    2. Upload Completed Excel File
+                  </h4>
+                  <p style={{ margin: '0 0 14px', fontSize: '13px', color: '#64748b' }}>
+                    Upload your populated Excel file containing multiple doctor license details below.
+                  </p>
+
+                  <div style={styles.dropZone}>
                     <input
-                      type="date"
-                      name="renewalSubmittedDate"
-                      value={form.renewalSubmittedDate}
-                      onChange={handleFormChange}
-                      style={styles.input}
+                      type="file"
+                      accept=".xlsx, .xls, .csv"
+                      onChange={handleBulkFileChange}
+                      style={{ display: 'none' }}
+                      id="bulkFileInput"
                     />
+                    <label htmlFor="bulkFileInput" style={{ cursor: 'pointer', display: 'block', width: '100%' }}>
+                      <div style={{ fontSize: '14px', fontWeight: '700', color: '#2563eb', marginBottom: '4px' }}>
+                        {bulkFile ? `Selected File: ${bulkFile.name}` : 'Click here to select & upload Excel file (.xlsx)'}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#64748b' }}>
+                        {bulkRecords.length > 0
+                          ? `Parsed ${bulkRecords.length} credential row(s) ready to be saved.`
+                          : 'Select an Excel file formatted using the downloaded template.'}
+                      </div>
+                    </label>
                   </div>
 
-                  <div>
-                    <label style={styles.label}>Renewal Completed Date</label>
-                    <input
-                      type="date"
-                      name="renewalCompletedDate"
-                      value={form.renewalCompletedDate}
-                      onChange={handleFormChange}
-                      style={styles.input}
-                    />
-                  </div>
+                  {/* PARSED PREVIEW TABLE */}
+                  {bulkRecords.length > 0 && (
+                    <div style={{ marginTop: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: '700', color: '#1e293b' }}>
+                          Parsed Credential Preview ({bulkRecords.length} rows)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBulkFile(null);
+                            setBulkRecords([]);
+                          }}
+                          style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '12px', cursor: 'pointer', fontWeight: '600' }}
+                        >
+                          Remove Uploaded File
+                        </button>
+                      </div>
 
-                  <div>
-                    <label style={styles.label}>Last Reminder Sent</label>
-                    <input
-                      type="date"
-                      name="lastReminderSent"
-                      value={form.lastReminderSent}
-                      onChange={handleFormChange}
-                      style={styles.input}
-                    />
-                  </div>
+                      <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '6px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                          <thead>
+                            <tr style={{ background: '#f1f5f9', borderBottom: '1px solid #cbd5e1', textAlign: 'left' }}>
+                              <th style={{ padding: '8px 12px' }}>#</th>
+                              <th style={{ padding: '8px 12px' }}>Provider Name</th>
+                              <th style={{ padding: '8px 12px' }}>Tax ID / NPI</th>
+                              <th style={{ padding: '8px 12px' }}>Credential Type</th>
+                              <th style={{ padding: '8px 12px' }}>Expiration</th>
+                              <th style={{ padding: '8px 12px' }}>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {bulkRecords.slice(0, 10).map((row, idx) => (
+                              <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                <td style={{ padding: '8px 12px', color: '#64748b' }}>{idx + 1}</td>
+                                <td style={{ padding: '8px 12px', fontWeight: '600', color: '#0f172a' }}>
+                                  {row['Provider Name'] || row.providerName || row.doctorName || 'N/A'}
+                                </td>
+                                <td style={{ padding: '8px 12px' }}>
+                                  {row['Provider Tax ID / NPI'] || row.taxIdNpi || 'N/A'}
+                                </td>
+                                <td style={{ padding: '8px 12px' }}>
+                                  {row['Credential Type'] || row.credentialType || row.licenseType || 'State License'}
+                                </td>
+                                <td style={{ padding: '8px 12px' }}>
+                                  {row['Expiration Date'] || row.expirationDate || row.expiryDate || 'N/A'}
+                                </td>
+                                <td style={{ padding: '8px 12px' }}>
+                                  {row['Status'] || row.status || 'Active'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {bulkRecords.length > 10 && (
+                          <div style={{ padding: '8px 12px', fontSize: '11px', color: '#64748b', textAlign: 'center', background: '#f8fafc' }}>
+                            + {bulkRecords.length - 10} more rows will be saved.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
-                  <div>
-                    <label style={styles.label}>Next Reminder Date</label>
-                    <input
-                      type="date"
-                      name="nextReminderDate"
-                      value={form.nextReminderDate}
-                      onChange={handleFormChange}
-                      style={styles.input}
-                    />
-                  </div>
+                {/* STEP 3: SAVE CREDENTIALS BUTTON */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsModalOpen(false);
+                      setModalRegisterTab('single');
+                    }}
+                    style={styles.cancelBtn}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBulkSubmit}
+                    disabled={isUploadingBulk || bulkRecords.length === 0}
+                    style={{
+                      ...styles.primaryButton,
+                      opacity: isUploadingBulk || bulkRecords.length === 0 ? 0.6 : 1,
+                      cursor: isUploadingBulk || bulkRecords.length === 0 ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {isUploadingBulk ? 'Saving Credentials...' : 'Save Credentials'}
+                  </button>
                 </div>
               </div>
-
-              <div style={styles.modalActions}>
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  style={styles.cancelBtn}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  style={styles.primaryButton}
-                >
-                  {isSaving ? 'Saving Record...' : 'Save Credential'}
-                </button>
-              </div>
-            </form>
+            )}
           </div>
         </div>
       )}
@@ -1596,6 +2014,54 @@ const styles = {
     justifyContent: 'flex-end',
     gap: '12px',
     marginTop: '12px',
+  },
+  registerTabContainer: {
+    display: 'flex',
+    gap: '8px',
+    borderBottom: '2px solid #e2e8f0',
+    marginBottom: '20px',
+    paddingBottom: '2px',
+  },
+  registerTabBtn: {
+    padding: '8px 16px',
+    background: 'none',
+    border: 'none',
+    borderBottom: '2px solid transparent',
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#64748b',
+    cursor: 'pointer',
+    marginBottom: '-2px',
+    transition: 'all 0.2s ease',
+  },
+  activeRegisterTabBtn: {
+    color: '#2563eb',
+    borderBottomColor: '#2563eb',
+  },
+  secondaryButton: {
+    padding: '9px 15px',
+    background: '#f1f5f9',
+    color: '#0f172a',
+    border: '1px solid #cbd5e1',
+    borderRadius: '6px',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'background 0.2s ease',
+  },
+  bulkStepCard: {
+    background: '#f8fafc',
+    borderRadius: '8px',
+    padding: '18px',
+    border: '1px solid #e2e8f0',
+  },
+  dropZone: {
+    border: '2px dashed #cbd5e1',
+    borderRadius: '8px',
+    padding: '24px',
+    textAlign: 'center',
+    background: '#ffffff',
+    transition: 'border-color 0.2s ease',
   },
   cancelBtn: {
     padding: '10px 16px',
